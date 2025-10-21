@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Virtual environments
+.venv/
+
+# Python cache
+*.pyc
+
+# Build artifacts
+build_temp/
+dist/
+packages/
+*.spec
+
+# Caches
+.pytest_cache
+.ruff_cache

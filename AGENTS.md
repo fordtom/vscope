@@ -1,0 +1,3 @@
+This repo consists of a python GUI for interacting with a debug interface built onto an embedded microcontroller. The application consists of a virtual oscilloscope, referred to as vscope, and some real-time read/write buffers for live control referred to as the rtbuffers. The application should provide a simple, clean one-page control panel for the vscope/rtbuffers (plus helpful information and some simple live stats) and a comprehensive graphing and comparison experience. vscope isn't really a 'real time' scope; the high resolution runs are stored on device and downloaded afterwards, to be saved as 'snapshots' - we plot these against each other at a later date.
+
+The code is formatted using `uv format` (follows black formatting).
