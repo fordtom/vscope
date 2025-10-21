@@ -12,7 +12,6 @@ from PyQt6.QtWidgets import (
     QMenu,
 )
 from PyQt6.QtGui import QAction
-from PyQt6.QtCore import QTimer
 
 from core import interface, devices, snapshots
 from app.components.styling import apply_light_mode, get_stylesheet
@@ -137,55 +136,48 @@ class ProperScopeGUI(QWidget):
         )
 
     def setup_periodic_sampling(self) -> None:
-        # Device state timer (20Hz)
-        self.state_timer = QTimer(self)
-        self.state_timer.timeout.connect(self.sample_state)
-        self.state_timer.start(50)
-
-        # Frame data timer (10Hz)
-        self.frame_timer = QTimer(self)
-        self.frame_timer.timeout.connect(self.sample_frame)
-        self.frame_timer.start(100)
-
+        # Start async tasks for periodic sampling
+        asyncio.create_task(self.sample_state_loop())
+        asyncio.create_task(self.sample_frame_loop())
         print("Periodic sampling started: state=50ms, frame=100ms")
 
-    def sample_state(self) -> None:
-        if len(devices.devices) > 0:
-            try:
-                asyncio.run(self.sample_state_async())
-            except Exception as exc:
-                print(f"Error sampling state: {exc}")
-                if self.vscope_controls.get_run_state() != "error":
-                    self.vscope_controls.set_run_state("error")
+    async def sample_state_loop(self) -> None:
+        """Periodic state sampler (20Hz) - runs in Qt event loop"""
+        while True:
+            if len(devices.devices) > 0:
+                try:
+                    state = await interface.get_state()
+                    if state is not None:
+                        state_mapping = {0: "run", 1: "stop", 2: "acquiring", 3: "error"}
+                        state_value = ord(state) if isinstance(state, bytes) else state
+                        button_state = state_mapping.get(state_value, "error")
+                        if self.vscope_controls.get_run_state() != button_state:
+                            self.vscope_controls.set_run_state(button_state)
+                except Exception as exc:
+                    print(f"Error sampling state: {exc}")
+                    if self.vscope_controls.get_run_state() != "error":
+                        self.vscope_controls.set_run_state("error")
+            await asyncio.sleep(0.05)  # 20Hz = 50ms
 
-    async def sample_state_async(self) -> None:
-        state = await interface.get_state()
-        if state is not None:
-            state_mapping = {0: "run", 1: "stop", 2: "acquiring", 3: "error"}
-            state_value = ord(state) if isinstance(state, bytes) else state
-            button_state = state_mapping.get(state_value, "error")
-            if self.vscope_controls.get_run_state() != button_state:
-                self.vscope_controls.set_run_state(button_state)
-
-    def sample_frame(self) -> None:
-        if len(devices.devices) > 0:
-            try:
-                asyncio.run(self.sample_frame_async())
-            except Exception:
-                # Silently ignore frame sampling errors
-                pass
-
-    async def sample_frame_async(self) -> None:
-        frame_data = await interface.get_frame()
-        if frame_data:
-            self.latest_frame_data = frame_data
-            processed_frame_data: Dict[str, np.ndarray] = {}
-            for device_id, channel_values in frame_data.items():
-                processed_frame_data[device_id] = np.array(channel_values).reshape(
-                    -1, 1
-                )
-            timestamp = time.time()
-            self.frame_buffer.append((timestamp, processed_frame_data))
+    async def sample_frame_loop(self) -> None:
+        """Periodic frame sampler (10Hz) - runs in Qt event loop"""
+        while True:
+            if len(devices.devices) > 0:
+                try:
+                    frame_data = await interface.get_frame()
+                    if frame_data:
+                        self.latest_frame_data = frame_data
+                        processed_frame_data: Dict[str, np.ndarray] = {}
+                        for device_id, channel_values in frame_data.items():
+                            processed_frame_data[device_id] = np.array(channel_values).reshape(
+                                -1, 1
+                            )
+                        timestamp = time.time()
+                        self.frame_buffer.append((timestamp, processed_frame_data))
+                except Exception:
+                    # Silently ignore frame sampling errors
+                    pass
+            await asyncio.sleep(0.1)  # 10Hz = 100ms
 
     def initialize_frame_buffer(self) -> None:
         """Pre-populate frame buffer with NaNs for smooth scrolling plots."""
@@ -234,14 +226,21 @@ def main() -> None:
     load_settings()
 
     import pyqtgraph as pg
+    from qasync import QEventLoop
 
     app = pg.mkQApp()
     apply_light_mode(app)
     app.setStyleSheet(get_stylesheet())
 
+    # Integrate qasync event loop
+    loop = QEventLoop(app)
+    asyncio.set_event_loop(loop)
+
     window = ProperScopeGUI()
     window.show()
-    sys.exit(app.exec())
+
+    with loop:
+        loop.run_forever()
 
 
 if __name__ == "__main__":

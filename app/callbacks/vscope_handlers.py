@@ -78,11 +78,7 @@ class VScopeHandlers:
             # If settings access fails, proceed with best effort
             pass
 
-        try:
-            asyncio.run(self.on_refresh_clicked())
-        except Exception as exc:
-            print(f"Error during refresh: {exc}")
-            self.on_refresh_clicked_fallback()
+        asyncio.create_task(self.on_refresh_clicked())
 
     def on_refresh_clicked_fallback(self) -> None:
         print("Refresh button clicked (fallback mode)")
@@ -195,17 +191,11 @@ class VScopeHandlers:
             print(f"State is {current_state} - no action taken")
             return
         elif current_state == "run":
-            try:
-                asyncio.run(self.set_device_state_async(1))
-                print("Sent set_state(1) - transitioning to stop")
-            except Exception as exc:
-                print(f"Error setting state to stop: {exc}")
+            asyncio.create_task(self.set_device_state_async(1))
+            print("Sent set_state(1) - transitioning to stop")
         elif current_state == "stop":
-            try:
-                asyncio.run(self.set_device_state_async(0))
-                print("Sent set_state(0) - transitioning to run")
-            except Exception as exc:
-                print(f"Error setting state to run: {exc}")
+            asyncio.create_task(self.set_device_state_async(0))
+            print("Sent set_state(0) - transitioning to run")
 
     def on_trigger_clicked(self) -> None:
         current_state = self.window.vscope_controls.get_run_state()
@@ -232,11 +222,8 @@ class VScopeHandlers:
                 print(f"Error creating live plot: {exc}")
             return
         elif current_state == "stop":
-            try:
-                asyncio.run(self.set_device_state_async(2))
-                print("Sent set_state(2) - triggering acquisition")
-            except Exception as exc:
-                print(f"Error triggering acquisition: {exc}")
+            asyncio.create_task(self.set_device_state_async(2))
+            print("Sent set_state(2) - triggering acquisition")
 
     def on_save_clicked(self) -> None:
         print("Save button clicked")
@@ -259,17 +246,19 @@ class VScopeHandlers:
                 return
 
             self.window.vscope_controls.set_save_button_saving(True)
-            QApplication.processEvents()
 
-            try:
-                asyncio.run(self.save_snapshot_async(description))
-            except Exception as exc:
-                print(f"Error saving snapshot: {exc}")
-                QMessageBox.critical(
-                    self.window, "Save Error", f"Failed to save snapshot:\n{str(exc)}"
-                )
-            finally:
-                self.window.vscope_controls.set_save_button_saving(False)
+            async def do_save():
+                try:
+                    await self.save_snapshot_async(description)
+                except Exception as exc:
+                    print(f"Error saving snapshot: {exc}")
+                    QMessageBox.critical(
+                        self.window, "Save Error", f"Failed to save snapshot:\n{str(exc)}"
+                    )
+                finally:
+                    self.window.vscope_controls.set_save_button_saving(False)
+
+            asyncio.create_task(do_save())
 
     async def save_snapshot_async(self, description: str) -> None:
         print(f"Starting snapshot save with description: '{description}'")
@@ -324,10 +313,7 @@ class VScopeHandlers:
             return
         acq_time = self.window.vscope_controls.get_acq_time_value()
         pretrigger_time = self.window.vscope_controls.get_pretrigger_value()
-        try:
-            asyncio.run(self.update_timing_async(acq_time, pretrigger_time))
-        except Exception as exc:
-            print(f"Error updating timing: {exc}")
+        asyncio.create_task(self.update_timing_async(acq_time, pretrigger_time))
 
     async def update_timing_async(
         self, sample_time: float, pretrigger_time: float
