@@ -14,5 +14,6 @@ dependencies = [
     "pyqtgraph==0.13.7",
     "pyserial>=3.5",
     "pytest>=8.4.1",
+    "qasync>=0.27.1",
     "tomli-w>=1.0.0"
 ]

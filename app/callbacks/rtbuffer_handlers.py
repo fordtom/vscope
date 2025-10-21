@@ -17,10 +17,7 @@ class RTBufferHandlers:
         if len(devices.devices) == 0:
             print(f"No devices connected - cannot update buffer {buffer_index + 1}")
             return
-        try:
-            asyncio.run(self.update_buffer_async(buffer_index, value))
-        except Exception as exc:
-            print(f"Error updating buffer {buffer_index + 1}: {exc}")
+        asyncio.create_task(self.update_buffer_async(buffer_index, value))
 
     async def update_buffer_async(self, buffer_index: int, value: float) -> None:
         success = await interface.set_buff(buffer_index, value)
