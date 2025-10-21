@@ -2,6 +2,14 @@ import struct
 import numpy as np
 from . import devices, snapshots
 
+# Default configuration constants
+DEFAULT_ONBOARD_POLLING_RATE = 50_000.0
+TIMING_REQUEST_SIZE = 8
+SINGLE_BYTE_RESPONSE = 1
+FLOAT_SIZE = 4
+SUCCESS_RESPONSE = b"\x00"
+FLOAT_COMPARISON_EPSILON = 1e-6
+
 
 def refresh():
     devices.refresh_devices()
@@ -13,8 +21,8 @@ async def get_timing():
     - bytes 0-3: divider value (sampled every nth sample based on a 50khz frequency)
     - bytes 4-7: pretrigger value (number of samples before the trigger)
     """
-    data = b"t00000000"  # TODO: New message IDs needed
-    await devices.send_message(data, 8)
+    data = b"t00000000"
+    await devices.send_message(data, TIMING_REQUEST_SIZE)
 
     # Extract divider/pretrigger from all devices and check consistency
     configs = [
@@ -32,11 +40,13 @@ async def get_timing():
         from app.gui.settings import get_settings
 
         settings = get_settings()
-        onboard_polling_rate = float(settings.get("onboard_polling_rate", 50_000.0))
+        onboard_polling_rate = float(
+            settings.get("onboard_polling_rate", DEFAULT_ONBOARD_POLLING_RATE)
+        )
         if onboard_polling_rate <= 0:
-            onboard_polling_rate = 50_000.0
+            onboard_polling_rate = DEFAULT_ONBOARD_POLLING_RATE
     except Exception:
-        onboard_polling_rate = 50_000.0
+        onboard_polling_rate = DEFAULT_ONBOARD_POLLING_RATE
 
     sample_time = divider * devices.buffer_length / onboard_polling_rate
     pretrigger_time = pretrigger * divider / onboard_polling_rate
@@ -60,11 +70,13 @@ async def set_timing(sample_time_seconds: float, pretrigger_time_seconds: float)
         from app.gui.settings import get_settings
 
         settings = get_settings()
-        onboard_polling_rate = float(settings.get("onboard_polling_rate", 50_000.0))
+        onboard_polling_rate = float(
+            settings.get("onboard_polling_rate", DEFAULT_ONBOARD_POLLING_RATE)
+        )
         if onboard_polling_rate <= 0:
-            onboard_polling_rate = 50_000.0
+            onboard_polling_rate = DEFAULT_ONBOARD_POLLING_RATE
     except Exception:
-        onboard_polling_rate = 50_000.0
+        onboard_polling_rate = DEFAULT_ONBOARD_POLLING_RATE
 
     divider = max(
         1, round(sample_time_seconds * onboard_polling_rate / devices.buffer_length)
@@ -74,13 +86,11 @@ async def set_timing(sample_time_seconds: float, pretrigger_time_seconds: float)
         round(pretrigger_time_seconds * onboard_polling_rate / divider),
     )
 
-    # Send combined timing message (1 byte 'f' + 4 bytes divider + 4 bytes pretrigger = 9 bytes)
     timing_message = b"T" + struct.pack("<II", divider, pretrigger)
-    await devices.send_message(timing_message, 1)
+    await devices.send_message(timing_message, SINGLE_BYTE_RESPONSE)
 
-    # Check all responses for success (b'\x00' indicates success)
     for device in devices.devices.values():
-        if device.response != b"\x00":
+        if device.response != SUCCESS_RESPONSE:
             return False
 
     return True
@@ -94,7 +104,7 @@ async def get_state():
         State if all devices match, None if no devices or mismatch
     """
     data = b"s00000000"
-    await devices.send_message(data, 1)
+    await devices.send_message(data, SINGLE_BYTE_RESPONSE)
     states = [device.response for device in devices.devices.values()]
     if not states or not all(state == states[0] for state in states):
         return None
@@ -109,11 +119,10 @@ async def set_state(state: int):
         state: State to set (0, 1, or 2)
     """
     data = b"S0000000" + bytes([state])
-    await devices.send_message(data, 1)
+    await devices.send_message(data, SINGLE_BYTE_RESPONSE)
 
-    # Check all responses for success (b'\x00' indicates success)
     for device in devices.devices.values():
-        if device.response != b"\x00":
+        if device.response != SUCCESS_RESPONSE:
             return False
     return True
 
@@ -129,15 +138,16 @@ async def get_buff(buffer: int):
         Float value if all devices match, None if no devices or mismatch
     """
     data = b"b0000" + struct.pack("<I", buffer)
-    await devices.send_message(data, 4)
+    await devices.send_message(data, FLOAT_SIZE)
 
-    # Extract buffer values from all devices and check consistency
     values = [
         struct.unpack("<f", device.response)[0]
         for device in devices.devices.values()
         if device.response is not None
     ]
-    if not values or not all(abs(value - values[0]) < 1e-6 for value in values):
+    if not values or not all(
+        abs(value - values[0]) < FLOAT_COMPARISON_EPSILON for value in values
+    ):
         return None
 
     return values[0]
@@ -154,13 +164,11 @@ async def set_buff(number: int, value: float) -> bool:
     Returns:
         True if successful, False if communication failed
     """
-    # Pack number (4 bytes) and value (4 bytes) as 32-bit values
     buffer_message = b"B" + struct.pack("<If", number, value)
-    await devices.send_message(buffer_message, 1)
+    await devices.send_message(buffer_message, SINGLE_BYTE_RESPONSE)
 
-    # Check all responses for success (b'\x00' indicates success)
     for device in devices.devices.values():
-        if device.response != b"\x00":
+        if device.response != SUCCESS_RESPONSE:
             return False
 
     return True
@@ -174,10 +182,10 @@ async def get_frame():
         Dictionary of device identifiers to numpy arrays of frame data
     """
     data = b"f00000000"
-    await devices.send_message(data, (4 * devices.channels))
+    await devices.send_message(data, (FLOAT_SIZE * devices.channels))
     return {
         device.identifier: struct.unpack(
-            f"<{len(device.response) // 4}f", device.response
+            f"<{len(device.response) // FLOAT_SIZE}f", device.response
         )
         for device in devices.devices.values()
         if device.response is not None
@@ -209,11 +217,8 @@ async def get_snapshot(
 
     for device in devices.devices.values():
         if device.response is not None:
-            # Incoming data is organised by measurement rows (all channels at a time)
-            # rather than channel blocks. Reshape accordingly and transpose so that
-            # the final array is indexed as [channel, buffer_index].
             float_data = struct.unpack(
-                f"<{len(device.response) // 4}f", device.response
+                f"<{len(device.response) // FLOAT_SIZE}f", device.response
             )
             reshaped = (
                 np.array(float_data)
