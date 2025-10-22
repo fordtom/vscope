@@ -120,7 +120,8 @@ class ProperScopeGUI(QWidget):
         for idx, input_widget in enumerate(self.rtbuffer_controls.buffer_inputs):
             input_widget.editingFinished.connect(
                 (
-                    lambda idx=idx, w=input_widget: self.rtbuffer_handlers.on_buffer_changed(
+                    lambda idx=idx,
+                    w=input_widget: self.rtbuffer_handlers.on_buffer_changed(
                         idx, w.value()
                     )
                 )
@@ -135,15 +136,10 @@ class ProperScopeGUI(QWidget):
         )
 
     def setup_periodic_sampling(self) -> None:
-        """Schedule async tasks to start once event loop is running."""
-        from PyQt6.QtCore import QTimer
-
-        QTimer.singleShot(
-            0,
-            lambda: asyncio.create_task(self.sample_state_loop())
-            and asyncio.create_task(self.sample_frame_loop())
-            and print("Periodic sampling started: state=50ms, frame=100ms"),
-        )
+        # Start async tasks for periodic sampling
+        asyncio.create_task(self.sample_state_loop())
+        asyncio.create_task(self.sample_frame_loop())
+        print("Periodic sampling started: state=50ms, frame=100ms")
 
     async def sample_state_loop(self) -> None:
         """Periodic state sampler (20Hz) - runs in Qt event loop"""
@@ -152,12 +148,7 @@ class ProperScopeGUI(QWidget):
                 try:
                     state = await interface.get_state()
                     if state is not None:
-                        state_mapping = {
-                            0: "run",
-                            1: "stop",
-                            2: "acquiring",
-                            3: "error",
-                        }
+                        state_mapping = {0: "run", 1: "stop", 2: "acquiring", 3: "error"}
                         state_value = ord(state) if isinstance(state, bytes) else state
                         button_state = state_mapping.get(state_value, "error")
                         if self.vscope_controls.get_run_state() != button_state:
@@ -178,9 +169,9 @@ class ProperScopeGUI(QWidget):
                         self.latest_frame_data = frame_data
                         processed_frame_data: Dict[str, np.ndarray] = {}
                         for device_id, channel_values in frame_data.items():
-                            processed_frame_data[device_id] = np.array(
-                                channel_values
-                            ).reshape(-1, 1)
+                            processed_frame_data[device_id] = np.array(channel_values).reshape(
+                                -1, 1
+                            )
                         timestamp = time.time()
                         self.frame_buffer.append((timestamp, processed_frame_data))
                 except Exception:
