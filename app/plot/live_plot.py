@@ -1,7 +1,7 @@
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt
 
 from .styling import LegendWidget
 from .core_plotting import (
@@ -48,9 +48,15 @@ class LivePlotWindow(QWidget):
         if devices.devices:
             device_ids = [device.identifier for device in devices.devices.values()]
         self.device_colors = build_device_color_mapping(device_ids)
+        self._legend_registered_devices = set()
 
         # Set up the UI
         self.init_ui()
+
+        # Track state for labels and plot items
+        self._labels_added = False
+        self.curves = {}
+        self.x_data = None
 
         # Set up live data updates
         self.setup_live_updates()
@@ -75,6 +81,7 @@ class LivePlotWindow(QWidget):
         # Populate legend with device colors
         for device_id, color in self.device_colors.items():
             self.legend_widget.add_device_legend(device_id, color)
+            self._legend_registered_devices.add(device_id)
 
         # Finalize the legend layout
         self.legend_widget.finalize_layout()
@@ -85,61 +92,57 @@ class LivePlotWindow(QWidget):
             layout.addWidget(plot_widget)
 
     def setup_live_updates(self):
-        """Set up timer for periodic live data updates."""
-        # Update every 100ms (10Hz) - same as frame sampling rate
-        self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self.update_plots)
-        self.update_timer.start(100)
-        print("LivePlotWindow: Started live update timer (100ms interval)")
+        """Bind live updates to GUI frame notifications."""
+        self.x_data, _ = self.gui.get_frame_buffer_data()
+        if self.x_data.size == 0:
+            # Fallback to default axis when buffers uninitialized
+            self.x_data = np.linspace(-10.0, 0.0, 101)
 
-    def update_plots(self):
-        """Update plots with current frame buffer data - always plots all 101 values."""
-        # Get current frame buffer data (x-axis is fixed from -10 to 0 seconds)
-        x_data, data_dict = self.gui.get_frame_buffer_data()
-
-        # Skip update if no data available
-        if len(x_data) == 0 or not data_dict:
-            return
-
-        # Clear existing plots
-        for plot_widget in self.plot_widgets:
-            plot_widget.clear()
-
-        # Plot each device's data with assigned colors
-        for device_id, device_data in data_dict.items():
-            if device_id not in self.device_colors:
-                continue
-
-            color = self.device_colors[device_id]
-
-            # Plot each channel for this device - always plot all 101 values
-            for channel in range(min(self.num_channels, device_data.shape[0])):
-                y_data = device_data[channel, :]
-
-                # Plot all values (NaN values won't render, maintaining x-axis shape)
-                pen = pg.mkPen(color=color, width=2, style=Qt.PenStyle.SolidLine)
-                self.plot_widgets[channel].plot(x_data, y_data, pen=pen)
-
-        # Set x-axis range to fixed -10 to 0, auto-range y-axis only
         for plot_widget in self.plot_widgets:
             view_box = plot_widget.getViewBox()
-            # Lock x-axis range, allow y-axis to auto-range
-            view_box.setXRange(-10.0, 0.0, padding=0)
-            # Auto-range only y-axis by temporarily disabling x auto-range
-            x_auto = view_box.state['autoRange'][0]
-            y_auto = view_box.state['autoRange'][1]
+            view_box.setXRange(float(self.x_data[0]), float(self.x_data[-1]), padding=0)
             view_box.enableAutoRange(x=False, y=True)
-            view_box.autoRange(padding=0.05)
-            view_box.enableAutoRange(x=x_auto, y=y_auto)
-            # Re-lock x-axis after auto-range
-            view_box.setXRange(-10.0, 0.0, padding=0)
 
-        # Add channel labels
+        if hasattr(self.gui, "frame_updated"):
+            self.gui.frame_updated.connect(self.update_plots)
+
+        self.update_plots(-1)
+
+    def update_plots(self, _write_index: int = -1):
+        """Refresh plot curves using the circular buffers."""
+        frame_buffers = getattr(self.gui, "frame_buffers", {})
+        if not frame_buffers:
+            if self.x_data is None:
+                self.x_data = np.linspace(-10.0, 0.0, 101)
+            blank = np.full_like(self.x_data, np.nan)
+            for curve in self.curves.values():
+                curve.setData(self.x_data, blank, connect="finite")
+            return
+
+        self._sync_device_colors(frame_buffers)
+        self._sync_curves(frame_buffers)
+
+        buffer_index = getattr(self.gui, "buffer_index", 0)
+
+        for device_id, buffer in frame_buffers.items():
+            for channel in range(min(self.num_channels, buffer.shape[0])):
+                curve = self.curves.get((device_id, channel))
+                if curve is None:
+                    curve = self._create_curve(device_id, channel)
+                    if curve is None:
+                        continue
+
+                ordered = np.roll(buffer[channel], -buffer_index)
+                curve.setData(self.x_data, ordered, connect="finite")
+
         self._add_channel_labels()
 
     def _add_channel_labels(self):
         """Add channel labels to the top right corner of each plot."""
         from core import devices
+
+        if self._labels_added:
+            return
 
         if not devices.devices:
             return
@@ -174,11 +177,64 @@ class LivePlotWindow(QWidget):
 
             text_item.setPos(x_range[1] - padding_x, y_range[1] - padding_y)
 
+        self._labels_added = True
+
+    def _sync_device_colors(self, frame_buffers):
+        device_ids = sorted(frame_buffers.keys())
+        if not device_ids:
+            return
+
+        if set(device_ids) != set(self.device_colors.keys()):
+            self.device_colors = build_device_color_mapping(device_ids)
+
+        for device_id in device_ids:
+            if device_id not in self._legend_registered_devices:
+                color = self.device_colors[device_id]
+                self.legend_widget.add_device_legend(device_id, color)
+                self._legend_registered_devices.add(device_id)
+
+    def _create_curve(self, device_id, channel):
+        if channel >= len(self.plot_widgets):
+            return None
+
+        color = self.device_colors.get(device_id)
+        if color is None:
+            return None
+
+        pen = pg.mkPen(color=color, width=2, style=Qt.PenStyle.SolidLine)
+        plot_widget = self.plot_widgets[channel]
+        curve = pg.PlotDataItem(
+            self.x_data, np.full_like(self.x_data, np.nan), pen=pen, connect="finite"
+        )
+        plot_widget.addItem(curve)
+        self.curves[(device_id, channel)] = curve
+        return curve
+
+    def _sync_curves(self, frame_buffers):
+        active_keys = {
+            (device_id, channel)
+            for device_id, buffer in frame_buffers.items()
+            for channel in range(min(self.num_channels, buffer.shape[0]))
+        }
+
+        for key, curve in list(self.curves.items()):
+            if key not in active_keys:
+                _, channel = key
+                if channel < len(self.plot_widgets):
+                    self.plot_widgets[channel].removeItem(curve)
+                del self.curves[key]
+
+        for key in active_keys:
+            if key not in self.curves:
+                self._create_curve(*key)
+
     def closeEvent(self, event):
-        """Handle window close event by stopping the update timer."""
-        if hasattr(self, "update_timer"):
-            self.update_timer.stop()
-            print("LivePlotWindow: Stopped live update timer")
+        """Handle window close event by disconnecting live updates."""
+        if hasattr(self.gui, "frame_updated"):
+            try:
+                self.gui.frame_updated.disconnect(self.update_plots)
+            except TypeError:
+                pass
         event.accept()
 
 

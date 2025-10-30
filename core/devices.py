@@ -89,7 +89,12 @@ class Device:
         self.comport = path
         if serial_kwargs is None:
             serial_kwargs = _serial_params_from_normalized(
-                (DEFAULT_BAUD_RATE, DEFAULT_DATA_BITS, DEFAULT_STOP_BITS, DEFAULT_PARITY)
+                (
+                    DEFAULT_BAUD_RATE,
+                    DEFAULT_DATA_BITS,
+                    DEFAULT_STOP_BITS,
+                    DEFAULT_PARITY,
+                )
             )
         self.port = serial.Serial(path, **serial_kwargs)
         self.port.flush()
@@ -305,9 +310,22 @@ class DeviceManager:
             self.buffer_length = device_list[0].buffer_length
 
     async def send_message(
-        self, message: bytes, return_size: Optional[int] = None
+        self,
+        message: bytes,
+        return_size: Optional[int] = None,
+        *,
+        acquire_timeout: float | None = None,
     ) -> None:
-        async with self._msg_lock:
+        acquire_coro = self._msg_lock.acquire()
+        if acquire_timeout is None:
+            await acquire_coro
+        else:
+            try:
+                await asyncio.wait_for(acquire_coro, acquire_timeout)
+            except asyncio.TimeoutError as exc:
+                raise TimeoutError("Serial interface busy") from exc
+
+        try:
             loop = asyncio.get_running_loop()
             tasks = [
                 loop.run_in_executor(
@@ -329,6 +347,9 @@ class DeviceManager:
                 raise RuntimeError(
                     f"Communication failed with devices: {', '.join(failed_identifiers)}"
                 )
+        finally:
+            if self._msg_lock.locked():
+                self._msg_lock.release()
 
 
 # Global singleton instance for backward compatibility
@@ -346,5 +367,12 @@ def refresh_devices() -> None:
     buffer_length = _device_manager.buffer_length
 
 
-async def send_message(message: bytes, return_size: Optional[int] = None) -> None:
-    await _device_manager.send_message(message, return_size)
+async def send_message(
+    message: bytes,
+    return_size: Optional[int] = None,
+    *,
+    acquire_timeout: float | None = None,
+) -> None:
+    await _device_manager.send_message(
+        message, return_size, acquire_timeout=acquire_timeout
+    )

@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QMenu,
 )
 from PyQt6.QtGui import QAction
+from PyQt6.QtCore import pyqtSignal
 
 from core import interface, devices, snapshots
 from app.components.styling import apply_light_mode, get_stylesheet
@@ -29,6 +30,7 @@ LIVE_SAMPLE_TIME = 0.1  # 100ms
 
 
 class ProperScopeGUI(QWidget):
+    frame_updated = pyqtSignal(int)
     """Coordinator for the VScope application.
 
     Wires UI components and callback handlers, manages periodic sampling,
@@ -42,7 +44,9 @@ class ProperScopeGUI(QWidget):
 
         # Live-frame state - fixed-size FIFO buffers (101 values per channel, one per device)
         self.latest_frame_data = None
-        self.frame_buffers: Dict[str, np.ndarray] = {}  # device_id -> [channels, 101] array
+        self.frame_buffers: Dict[str, np.ndarray] = (
+            {}
+        )  # device_id -> [channels, 101] array
         self.buffer_index = 0  # Circular buffer index (0-100)
 
         # Build UI and handlers
@@ -177,23 +181,26 @@ class ProperScopeGUI(QWidget):
         while True:
             if len(devices.devices) > 0:
                 try:
-                    frame_data = await interface.get_frame()
+                    frame_data = await interface.get_frame(lock_timeout=0.09)
                     if frame_data:
                         self.latest_frame_data = frame_data
-                        # Initialize buffers if needed
-                        if not self.frame_buffers:
-                            self._initialize_frame_buffers()
-                        # Reinitialize if device count changed
-                        elif len(self.frame_buffers) != len(devices.devices):
-                            self._initialize_frame_buffers()
-                        # Add new frame to circular buffer
-                        for device_id, channel_values in frame_data.items():
-                            if device_id not in self.frame_buffers:
-                                self._initialize_frame_buffers()
-                            if device_id in self.frame_buffers:
-                                frame_array = np.array(channel_values).reshape(-1, 1)
-                                self.frame_buffers[device_id][:, self.buffer_index] = frame_array[:, 0]
-                        self.buffer_index = (self.buffer_index + 1) % LIVE_BUFFER_SIZE
+                        if self._ensure_frame_buffers_current():
+                            write_index = self.buffer_index
+                            for device_id, channel_values in frame_data.items():
+                                if device_id in self.frame_buffers:
+                                    frame_array = np.array(channel_values).reshape(
+                                        -1, 1
+                                    )
+                                    self.frame_buffers[device_id][:, write_index] = (
+                                        frame_array[:, 0]
+                                    )
+                            if self.frame_buffers:
+                                self.buffer_index = (write_index + 1) % LIVE_BUFFER_SIZE
+                                self.frame_updated.emit(write_index)
+                    else:
+                        self._append_nan_frame()
+                except TimeoutError:
+                    self._append_nan_frame()
                 except Exception:
                     # Silently ignore frame sampling errors
                     pass
@@ -206,6 +213,7 @@ class ProperScopeGUI(QWidget):
                 "No devices or channel configuration available - frame buffers left empty"
             )
             self.frame_buffers = {}
+            self.frame_updated.emit(-1)
             return
 
         self.frame_buffers = {}
@@ -214,6 +222,8 @@ class ProperScopeGUI(QWidget):
                 (devices.channels, LIVE_BUFFER_SIZE), np.nan
             )
         self.buffer_index = 0
+        if self.frame_buffers:
+            self.frame_updated.emit((LIVE_BUFFER_SIZE - 1))
 
     def initialize_frame_buffer(self) -> None:
         """Clear frame buffers by setting all values to NaN."""
@@ -223,6 +233,7 @@ class ProperScopeGUI(QWidget):
             )
             self.frame_buffers = {}
             self.buffer_index = 0
+            self.frame_updated.emit(-1)
             return
 
         # Initialize buffers if they don't exist
@@ -237,18 +248,54 @@ class ProperScopeGUI(QWidget):
                 del self.frame_buffers[device_id]
             else:
                 self.frame_buffers[device_id][:] = np.nan
-        
+
         # Add any new devices
         for device in devices.devices.values():
             if device.identifier not in self.frame_buffers:
                 self.frame_buffers[device.identifier] = np.full(
                     (devices.channels, LIVE_BUFFER_SIZE), np.nan
                 )
-        
+
         self.buffer_index = 0
         print(
             f"Frame buffers cleared (set to NaN) - {LIVE_BUFFER_SIZE} values per channel"
         )
+        if self.frame_buffers:
+            self.frame_updated.emit((LIVE_BUFFER_SIZE - 1))
+        else:
+            self.frame_updated.emit(-1)
+
+    def _ensure_frame_buffers_current(self) -> bool:
+        if len(devices.devices) == 0 or devices.channels is None:
+            self.frame_buffers = {}
+            return False
+
+        device_ids = {device.identifier for device in devices.devices.values()}
+
+        # Remove buffers for devices no longer present
+        for device_id in list(self.frame_buffers.keys()):
+            if device_id not in device_ids:
+                del self.frame_buffers[device_id]
+
+        # Add buffers for any new devices
+        for device in devices.devices.values():
+            if device.identifier not in self.frame_buffers:
+                self.frame_buffers[device.identifier] = np.full(
+                    (devices.channels, LIVE_BUFFER_SIZE), np.nan
+                )
+
+        return bool(self.frame_buffers)
+
+    def _append_nan_frame(self) -> None:
+        if not self._ensure_frame_buffers_current():
+            return
+
+        write_index = self.buffer_index
+        for buffer in self.frame_buffers.values():
+            buffer[:, write_index] = np.nan
+
+        self.buffer_index = (write_index + 1) % LIVE_BUFFER_SIZE
+        self.frame_updated.emit(write_index)
 
     def get_frame_buffer_data(self) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
         """Get frame buffer data with fixed x-axis from -10 to 0 seconds."""
@@ -256,17 +303,17 @@ class ProperScopeGUI(QWidget):
             # Return empty arrays with correct shape
             x_data = np.linspace(-10.0, 0.0, LIVE_BUFFER_SIZE)
             return (x_data, {})
-        
+
         # Create fixed x-axis from -10 to 0 seconds (inclusive)
         x_data = np.linspace(-10.0, 0.0, LIVE_BUFFER_SIZE)
-        
+
         # Reorder buffers to show chronological order (oldest to newest)
         data_dict: Dict[str, np.ndarray] = {}
         for device_id, buffer in self.frame_buffers.items():
             # Roll buffer so oldest data is first (starting from buffer_index)
             reordered = np.roll(buffer, -self.buffer_index, axis=1)
             data_dict[device_id] = reordered
-        
+
         return (x_data, data_dict)
 
 
