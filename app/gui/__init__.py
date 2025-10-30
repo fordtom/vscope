@@ -1,7 +1,6 @@
 import sys
 import asyncio
 import time
-from collections import deque
 from typing import Tuple, Dict
 
 import numpy as np
@@ -24,6 +23,10 @@ from app.callbacks.snapshot_handlers import SnapshotHandlers
 
 from .settings import SettingsDialog, load_settings, get_settings  # re-export accessor
 
+# Live buffer configuration: 10 seconds at 100ms sample time = 101 values (from -10 to 0 inclusive)
+LIVE_BUFFER_SIZE = 101
+LIVE_SAMPLE_TIME = 0.1  # 100ms
+
 
 class ProperScopeGUI(QWidget):
     """Coordinator for the VScope application.
@@ -37,9 +40,10 @@ class ProperScopeGUI(QWidget):
         self.setWindowTitle("VScope Control Panel")
         self.setGeometry(100, 100, 800, 600)
 
-        # Live-frame state
+        # Live-frame state - fixed-size FIFO buffers (101 values per channel, one per device)
         self.latest_frame_data = None
-        self.frame_buffer: deque = deque(maxlen=100)  # ~10 seconds at 10Hz
+        self.frame_buffers: Dict[str, np.ndarray] = {}  # device_id -> [channels, 101] array
+        self.buffer_index = 0  # Circular buffer index (0-100)
 
         # Build UI and handlers
         self.init_ui()
@@ -176,58 +180,94 @@ class ProperScopeGUI(QWidget):
                     frame_data = await interface.get_frame()
                     if frame_data:
                         self.latest_frame_data = frame_data
-                        processed_frame_data: Dict[str, np.ndarray] = {}
+                        # Initialize buffers if needed
+                        if not self.frame_buffers:
+                            self._initialize_frame_buffers()
+                        # Reinitialize if device count changed
+                        elif len(self.frame_buffers) != len(devices.devices):
+                            self._initialize_frame_buffers()
+                        # Add new frame to circular buffer
                         for device_id, channel_values in frame_data.items():
-                            processed_frame_data[device_id] = np.array(
-                                channel_values
-                            ).reshape(-1, 1)
-                        timestamp = time.time()
-                        self.frame_buffer.append((timestamp, processed_frame_data))
+                            if device_id not in self.frame_buffers:
+                                self._initialize_frame_buffers()
+                            if device_id in self.frame_buffers:
+                                frame_array = np.array(channel_values).reshape(-1, 1)
+                                self.frame_buffers[device_id][:, self.buffer_index] = frame_array[:, 0]
+                        self.buffer_index = (self.buffer_index + 1) % LIVE_BUFFER_SIZE
                 except Exception:
                     # Silently ignore frame sampling errors
                     pass
-            await asyncio.sleep(0.1)  # 10Hz = 100ms
+            await asyncio.sleep(LIVE_SAMPLE_TIME)  # 10Hz = 100ms
 
-    def initialize_frame_buffer(self) -> None:
-        """Pre-populate frame buffer with NaNs for smooth scrolling plots."""
-        self.frame_buffer.clear()
+    def _initialize_frame_buffers(self) -> None:
+        """Initialize or reinitialize frame buffers with NaN values."""
         if len(devices.devices) == 0 or devices.channels is None:
             print(
-                "No devices or channel configuration available - frame buffer left empty"
+                "No devices or channel configuration available - frame buffers left empty"
             )
+            self.frame_buffers = {}
             return
 
-        current_time = time.time()
-        buffer_duration = self.frame_buffer.maxlen * 0.1  # 10Hz sampling
-        for i in range(self.frame_buffer.maxlen):
-            timestamp = current_time - buffer_duration + (i * 0.1)
-            nan_frame_data: Dict[str, np.ndarray] = {}
-            for device in devices.devices.values():
-                nan_frame_data[device.identifier] = np.full(
-                    (devices.channels, 1), np.nan
-                )
-            self.frame_buffer.append((timestamp, nan_frame_data))
+        self.frame_buffers = {}
+        for device in devices.devices.values():
+            self.frame_buffers[device.identifier] = np.full(
+                (devices.channels, LIVE_BUFFER_SIZE), np.nan
+            )
+        self.buffer_index = 0
 
+    def initialize_frame_buffer(self) -> None:
+        """Clear frame buffers by setting all values to NaN."""
+        if len(devices.devices) == 0 or devices.channels is None:
+            print(
+                "No devices or channel configuration available - frame buffers left empty"
+            )
+            self.frame_buffers = {}
+            self.buffer_index = 0
+            return
+
+        # Initialize buffers if they don't exist
+        if not self.frame_buffers:
+            self._initialize_frame_buffers()
+            return
+
+        # Set all values to NaN instead of clearing
+        for device_id in list(self.frame_buffers.keys()):
+            # Remove devices that no longer exist
+            if device_id not in [d.identifier for d in devices.devices.values()]:
+                del self.frame_buffers[device_id]
+            else:
+                self.frame_buffers[device_id][:] = np.nan
+        
+        # Add any new devices
+        for device in devices.devices.values():
+            if device.identifier not in self.frame_buffers:
+                self.frame_buffers[device.identifier] = np.full(
+                    (devices.channels, LIVE_BUFFER_SIZE), np.nan
+                )
+        
+        self.buffer_index = 0
         print(
-            f"Frame buffer initialized with {self.frame_buffer.maxlen} NaN entries for smooth scrolling"
+            f"Frame buffers cleared (set to NaN) - {LIVE_BUFFER_SIZE} values per channel"
         )
-        device_identifiers = [device.identifier for device in devices.devices.values()]
-        if len(device_identifiers) > 0:
-            print(f"Using device identifiers: {device_identifiers}")
-        else:
-            print("No device identifiers found during initialization")
 
     def get_frame_buffer_data(self) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
-        if not self.frame_buffer:
-            return (np.array([]), {})
-        timestamps = np.array([entry[0] for entry in self.frame_buffer])
+        """Get frame buffer data with fixed x-axis from -10 to 0 seconds."""
+        if not self.frame_buffers:
+            # Return empty arrays with correct shape
+            x_data = np.linspace(-10.0, 0.0, LIVE_BUFFER_SIZE)
+            return (x_data, {})
+        
+        # Create fixed x-axis from -10 to 0 seconds (inclusive)
+        x_data = np.linspace(-10.0, 0.0, LIVE_BUFFER_SIZE)
+        
+        # Reorder buffers to show chronological order (oldest to newest)
         data_dict: Dict[str, np.ndarray] = {}
-        for device_id in self.frame_buffer[0][1].keys():
-            device_frames = [
-                frame_data[device_id] for _, frame_data in self.frame_buffer
-            ]
-            data_dict[device_id] = np.concatenate(device_frames, axis=1)
-        return (timestamps, data_dict)
+        for device_id, buffer in self.frame_buffers.items():
+            # Roll buffer so oldest data is first (starting from buffer_index)
+            reordered = np.roll(buffer, -self.buffer_index, axis=1)
+            data_dict[device_id] = reordered
+        
+        return (x_data, data_dict)
 
 
 def main() -> None:

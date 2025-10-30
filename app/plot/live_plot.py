@@ -49,9 +49,6 @@ class LivePlotWindow(QWidget):
             device_ids = [device.identifier for device in devices.devices.values()]
         self.device_colors = build_device_color_mapping(device_ids)
 
-        # Track last update time to avoid unnecessary redraws
-        self.last_update_time = 0
-
         # Set up the UI
         self.init_ui()
 
@@ -96,28 +93,17 @@ class LivePlotWindow(QWidget):
         print("LivePlotWindow: Started live update timer (100ms interval)")
 
     def update_plots(self):
-        """Update plots with current frame buffer data."""
-        # Get current frame buffer data
-        timestamps, data_dict = self.gui.get_frame_buffer_data()
+        """Update plots with current frame buffer data - always plots all 101 values."""
+        # Get current frame buffer data (x-axis is fixed from -10 to 0 seconds)
+        x_data, data_dict = self.gui.get_frame_buffer_data()
 
         # Skip update if no data available
-        if len(timestamps) == 0 or not data_dict:
+        if len(x_data) == 0 or not data_dict:
             return
-
-        # Skip update if data hasn't changed since last update
-        if len(timestamps) > 0 and timestamps[-1] == self.last_update_time:
-            return
-
-        # Update last update time
-        self.last_update_time = timestamps[-1] if len(timestamps) > 0 else 0
 
         # Clear existing plots
         for plot_widget in self.plot_widgets:
             plot_widget.clear()
-
-        # Create time axis relative to current time (oscilloscope-style scrolling)
-        current_time = timestamps[-1] if len(timestamps) > 0 else 0
-        x_data = timestamps - current_time  # Relative time (negative values = past)
 
         # Plot each device's data with assigned colors
         for device_id, device_data in data_dict.items():
@@ -126,20 +112,27 @@ class LivePlotWindow(QWidget):
 
             color = self.device_colors[device_id]
 
-            # Plot each channel for this device
+            # Plot each channel for this device - always plot all 101 values
             for channel in range(min(self.num_channels, device_data.shape[0])):
                 y_data = device_data[channel, :]
 
-                # Skip plotting if all data is NaN
-                if np.all(np.isnan(y_data)):
-                    continue
-
+                # Plot all values (NaN values won't render, maintaining x-axis shape)
                 pen = pg.mkPen(color=color, width=2, style=Qt.PenStyle.SolidLine)
                 self.plot_widgets[channel].plot(x_data, y_data, pen=pen)
 
-        # Auto-range all plots to fit data
+        # Set x-axis range to fixed -10 to 0, auto-range y-axis only
         for plot_widget in self.plot_widgets:
-            plot_widget.autoRange()
+            view_box = plot_widget.getViewBox()
+            # Lock x-axis range, allow y-axis to auto-range
+            view_box.setXRange(-10.0, 0.0, padding=0)
+            # Auto-range only y-axis by temporarily disabling x auto-range
+            x_auto = view_box.state['autoRange'][0]
+            y_auto = view_box.state['autoRange'][1]
+            view_box.enableAutoRange(x=False, y=True)
+            view_box.autoRange(padding=0.05)
+            view_box.enableAutoRange(x=x_auto, y=y_auto)
+            # Re-lock x-axis after auto-range
+            view_box.setXRange(-10.0, 0.0, padding=0)
 
         # Add channel labels
         self._add_channel_labels()
