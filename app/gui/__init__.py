@@ -30,12 +30,15 @@ LIVE_SAMPLE_TIME = 0.1  # 100ms
 
 
 class ProperScopeGUI(QWidget):
-    frame_updated = pyqtSignal(int)
     """Coordinator for the VScope application.
 
     Wires UI components and callback handlers, manages periodic sampling,
     and exposes lightweight helpers for frame buffer data used by plotting.
     """
+
+    # Emitted when a new frame is written to the circular buffer.
+    # Args: write_index (int) - buffer write position, or -1 if buffers cleared
+    frame_updated = pyqtSignal(int)
 
     def __init__(self) -> None:
         super().__init__()

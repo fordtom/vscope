@@ -57,6 +57,7 @@ class LivePlotWindow(QWidget):
         self._labels_added = False
         self.curves = {}
         self.x_data = None
+        self._signal_connected = False
 
         # Set up live data updates
         self.setup_live_updates()
@@ -105,6 +106,7 @@ class LivePlotWindow(QWidget):
 
         if hasattr(self.gui, "frame_updated"):
             self.gui.frame_updated.connect(self.update_plots)
+            self._signal_connected = True
 
         self.update_plots(-1)
 
@@ -230,11 +232,13 @@ class LivePlotWindow(QWidget):
 
     def closeEvent(self, event):
         """Handle window close event by disconnecting live updates."""
-        if hasattr(self.gui, "frame_updated"):
+        if self._signal_connected and hasattr(self.gui, "frame_updated"):
             try:
                 self.gui.frame_updated.disconnect(self.update_plots)
-            except TypeError:
-                pass
+                self._signal_connected = False
+            except (TypeError, RuntimeError):
+                # Signal already disconnected or not connected
+                self._signal_connected = False
         event.accept()
 
 
