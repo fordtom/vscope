@@ -174,7 +174,7 @@ async def set_buff(number: int, value: float) -> bool:
     return True
 
 
-async def get_frame():
+async def get_frame(lock_timeout: float | None = None):
     """
     Gets a single frame of data from devices.
 
@@ -182,7 +182,9 @@ async def get_frame():
         Dictionary of device identifiers to numpy arrays of frame data
     """
     data = b"f00000000"
-    await devices.send_message(data, (FLOAT_SIZE * devices.channels))
+    await devices.send_message(
+        data, (FLOAT_SIZE * devices.channels), acquire_timeout=lock_timeout
+    )
     return {
         device.identifier: struct.unpack(
             f"<{len(device.response) // FLOAT_SIZE}f", device.response
