@@ -10,40 +10,45 @@
 // Length of the fixed device identifier/name returned during handshake
 #define VSCOPE_DEVICE_NAME_LEN 10
 
-typedef enum
-{
-    VSCOPE_HALTED = 0,
-    VSCOPE_RUNNING = 1,
-    VSCOPE_ACQUIRING = 2,
-    VSCOPE_MISCONFIGURED = 3,
+typedef enum {
+  VSCOPE_HALTED = 0,
+  VSCOPE_RUNNING = 1,
+  VSCOPE_ACQUIRING = 2,
+  VSCOPE_MISCONFIGURED = 3,
 } VscopeState;
 
-typedef enum
-{
-    PI_KP = 0,
-    PI_KI = 1,
+typedef enum {
+  TRG_THRESHOLD = 0,
+  TRG_CHANNEL = 1,
+  TRG_MODE = 2,
 
-    RT_BUFFER_LENGTH = 16,
+  RT_BUFFER_LENGTH = 16,
 } VscopeRtBufferIndexes;
 
-typedef struct
-{
-    VscopeState state;
-    VscopeState request;
+typedef enum {
+  VSCOPE_TRG_DISABLED = 0,
+  VSCOPE_TRG_RISING = 1,
+  VSCOPE_TRG_FALLING = 2,
+  VSCOPE_TRG_BOTH = 3,
+} VscopeTriggerMode;
 
-    float *frame[VSCOPE_NUM_CHANNELS];
-    float buffer[VSCOPE_DEFAULT_BUFFER_SIZE][VSCOPE_NUM_CHANNELS];
+typedef struct {
+  VscopeState state;
+  VscopeState request;
 
-    uint32_t buffer_size;
-    uint32_t n_ch;
-    uint32_t divider;
-    uint32_t pre_trig;
-    uint32_t acq_time;
-    uint32_t index;
-    uint32_t first_element;
+  float *frame[VSCOPE_NUM_CHANNELS];
+  float buffer[VSCOPE_DEFAULT_BUFFER_SIZE][VSCOPE_NUM_CHANNELS];
 
-    // Fixed-length device identifier returned in handshake (user should populate)
-    char device_name[VSCOPE_DEVICE_NAME_LEN];
+  uint32_t buffer_size;
+  uint32_t n_ch;
+  uint32_t divider;
+  uint32_t pre_trig;
+  uint32_t acq_time;
+  uint32_t index;
+  uint32_t first_element;
+
+  // Fixed-length device identifier returned in handshake (user should populate)
+  char device_name[VSCOPE_DEVICE_NAME_LEN];
 } VscopeStruct;
 
 extern VscopeStruct vscope;
@@ -55,7 +60,8 @@ extern char vscope_channel_names[VSCOPE_NUM_CHANNELS][VSCOPE_MAX_NAME_LEN];
 void vscopeInit(void);
 
 /**
- * @brief This function is used to store data in the vscope buffer when the scope is running/triggered.
+ * @brief This function is used to store data in the vscope buffer when the
+ *scope is running/triggered.
  **/
 void vscopeAcquire(void);
 
@@ -66,7 +72,8 @@ void vscopeTrigger(void);
 
 /**
  * @brief Handles an incoming serial request.
- * @param msg a pointer to a char buffer. The function assumes the correct length of 9 bytes.
+ * @param msg a pointer to a char buffer. The function assumes the correct
+ * length of 9 bytes.
  */
 void vscopeProcessMessage(char *msg);
 
@@ -83,5 +90,11 @@ float vscopeGetRtBuffer(VscopeRtBufferIndexes index);
  * @param value The value.
  */
 void vscopeSetRtBuffer(VscopeRtBufferIndexes index, float value);
+
+void vscopeSetTriggerThreshold(float threshold);
+
+void vscopeSetTriggerChannel(uint32_t channel);
+
+void vscopeSetTriggerMode(VscopeTriggerMode mode);
 
 #endif // VSCOPE_H
