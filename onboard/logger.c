@@ -71,51 +71,27 @@ void saveFrameToBuffer(void) {
 }
 
 void vscopeCheckTrigger(void) {
-  static bool active = false;
-  static float last_value = 0.0f;
+  static float last_delta = 0.0f;
+  float current_delta = *vscope.frame[trigger_channel] - trigger_threshold;
 
-  float current_value = *vscope.frame[trigger_channel];
-
-  switch (trigger_mode) {
-  case VSCOPE_TRG_DISABLED: {
-    active = false;
-    break;
-  }
-  case VSCOPE_TRG_RISING: {
-    if (current_value < trigger_threshold) {
-      active = true;
-    }
-    break;
-  }
-  case VSCOPE_TRG_FALLING: {
-    if (current_value > trigger_threshold) {
-      active = true;
-    }
-    break;
-  }
-  case VSCOPE_TRG_BOTH: {
-    active = true;
-    break;
-  }
+  if (trigger_mode == VSCOPE_TRG_DISABLED) {
+    last_delta = current_delta;
+    return;
   }
 
-  if (active) {
-    if ((current_value - trigger_threshold) * (last_value - trigger_threshold) <
-        0.0f) {
-      if ((current_value > trigger_threshold) &&
-          (trigger_mode != VSCOPE_TRG_FALLING)) {
+  if (current_delta * last_delta < 0.0f) {
+    if (current_delta > 0.0f) {
+      if (trigger_mode != VSCOPE_TRG_FALLING) {
         vscopeTrigger();
-        active = false;
       }
-      if ((current_value < trigger_threshold) &&
-          (trigger_mode != VSCOPE_TRG_RISING)) {
+    } else {
+      if (trigger_mode != VSCOPE_TRG_RISING) {
         vscopeTrigger();
-        active = false;
       }
     }
   }
 
-  last_value = current_value;
+  last_delta = current_delta;
 }
 
 void vscopeAcquire(void) {
@@ -132,6 +108,8 @@ void vscopeAcquire(void) {
   }
   divider = 0U;
 
+  vscopeCheckTrigger();
+
   switch (vscope.state) {
   case VSCOPE_HALTED: {
     vscope.index = 0U;
@@ -146,8 +124,6 @@ void vscopeAcquire(void) {
     if (vscope.request == VSCOPE_HALTED) {
       vscope.state = VSCOPE_HALTED;
     }
-
-    vscopeCheckTrigger();
 
     if (vscope.request == VSCOPE_ACQUIRING) {
       if (vscope.acq_time == 0U) {
