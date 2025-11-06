@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  windows-build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install project dependencies
+        run: |
+          pip install --upgrade wheel
+          pip install -e .
+
+      - name: Build Windows executable with Nuitka
+        shell: cmd
+        run: build\build.bat
+
+      - name: Generate SHA256 checksum
+        shell: pwsh
+        run: |
+          $exe = Join-Path $PWD 'dist/VScope.exe'
+          if (!(Test-Path $exe)) {
+            Get-ChildItem dist
+            throw "Executable not produced by build\build.bat"
+          }
+          $hash = Get-FileHash $exe -Algorithm SHA256
+          $line = "$($hash.Hash)  VScope.exe"
+          $checksum = Join-Path (Split-Path $exe) 'VScope.exe.sha256'
+          $line | Out-File -FilePath $checksum -Encoding ascii
+          Write-Host "SHA256: $line"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/VScope.exe
+            dist/VScope.exe.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

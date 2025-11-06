@@ -1,104 +1,95 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal EnableDelayedExpansion
 
 echo ========================================
-echo VScope Build Script
+echo VScope Nuitka Build
 echo ========================================
 
-::: Save current directory and move to project root
-set BUILD_DIR=%~dp0
+set "BUILD_DIR=%~dp0"
+set "PROJECT_ROOT=%BUILD_DIR%.."
+pushd "%PROJECT_ROOT%" >nul
+
 echo Build script directory: %BUILD_DIR%
-echo Initial working directory: %CD%
-cd /d "%BUILD_DIR%\.."
 echo Project root directory: %CD%
 
-::: Get version from git tags
-set VERSION=1.0.1
-set FOUND_GIT_TAG=false
-
-echo Checking for git tags from project root...
-echo Current directory: %CD%
-
-::: List all available tags for debugging
-echo Available git tags:
-git tag -l
-
-::: Try simple git tag list first
-echo Testing basic git tag command...
-git tag -l >nul 2>&1
-if %ERRORLEVEL% equ 0 (
-    echo Git tag command works
-    
-    :: Get the last tag from the list (assuming it's the latest)
-    for /f %%i in ('git tag -l') do (
-        set LATEST_TAG=%%i
-    )
-    
-    if defined LATEST_TAG (
-        set VERSION=!LATEST_TAG!
-        :: Remove 'v' prefix if present
-        if "!VERSION:~0,1!"=="v" set VERSION=!VERSION:~1!
-        echo Found git tag: !LATEST_TAG!
-        set FOUND_GIT_TAG=true
-    ) else (
-        echo No tags found in git tag list
-    )
-) else (
-    echo Git tag command failed
+:: Resolve version from git (fall back to pyproject)
+set "VERSION="
+for /f "usebackq tokens=*" %%i in (`git describe --tags --abbrev=0 2^>nul`) do (
+    set "VERSION=%%i"
+    goto :version_ok
 )
 
-if "!FOUND_GIT_TAG!"=="false" (
-    echo Using default version: %VERSION%
+:version_ok
+if not defined VERSION (
+    for /f "tokens=2 delims==" %%i in ('findstr /b /c:"version =" pyproject.toml') do (
+        set "VERSION=%%~i"
+    )
 )
+
+set "VERSION=%VERSION: =%"
+if defined VERSION if "%VERSION:~0,1%"=="v" set "VERSION=%VERSION:~1%"
+if not defined VERSION set "VERSION=0.0.0"
 
 echo Building version: %VERSION%
 
-::: Clean previous builds
-echo Cleaning previous builds...
-if exist "dist" rmdir /s /q "dist"
-if exist "build_temp" rmdir /s /q "build_temp"
+:: Prepare output directories
+set "DIST_DIR=%PROJECT_ROOT%\dist"
+set "CACHE_DIR=%PROJECT_ROOT%\.nuitka"
+if exist "%DIST_DIR%" (
+    echo Removing previous dist directory...
+    rmdir /s /q "%DIST_DIR%"
+)
+if not exist "%CACHE_DIR%" mkdir "%CACHE_DIR%"
+set "NUITKA_CACHE_DIR=%CACHE_DIR%"
 
-:: Skipping version bump steps; version is managed via project metadata
-cd "%BUILD_DIR%"
+:: Ensure entry point exists
+if not exist "%PROJECT_ROOT%\main.py" (
+    echo Error: main.py not found at project root.
+    popd
+    exit /b 1
+)
 
-::: Build with PyInstaller from project root
-echo Building executable...
-echo Changing back to project root for PyInstaller...
-cd /d "%BUILD_DIR%\.."
-echo Current directory for PyInstaller: %CD%
+echo Running Nuitka...
+python -m nuitka ^
+    --standalone ^
+    --onefile ^
+    --assume-yes-for-downloads ^
+    --enable-plugin=pyqt6 ^
+    --enable-plugin=numpy ^
+    --include-qt-plugins=sensible,styles,platforms,iconengines ^
+    --include-package=app ^
+    --include-package=core ^
+    --nofollow-import-to=PyQt6.QtOpenGL ^
+    --remove-output ^
+    --output-dir="%DIST_DIR%" ^
+    --product-name="VScope" ^
+    --file-version="%VERSION%" ^
+    --product-version="%VERSION%" ^
+    --company-name="VScope" ^
+    --windows-console-mode=disable ^
+    main.py
 
-::: Verify main.py exists
-if exist "main.py" (
-    echo Found main.py
+if errorlevel 1 (
+    echo Nuitka build failed.
+    popd
+    exit /b 1
+)
+
+echo ========================================
+echo Nuitka build completed successfully!
+for %%f in ("%DIST_DIR%\main.exe" "%DIST_DIR%\main.cmd" "%DIST_DIR%\main.bin") do (
+    if exist %%f (
+        ren %%f VScope.exe
+    )
+)
+if exist "%DIST_DIR%\VScope.exe" (
+    echo Output: %DIST_DIR%\VScope.exe
 ) else (
-    echo main.py not found in current directory
-    echo Files in current directory:
-    dir *.py
-    echo Build failed - main.py not found!
-    pause
-    exit /b 1
+    echo Warning: Expected VScope.exe not found. Actual dist contents:
+    dir "%DIST_DIR%"
 )
-
-::: Run PyInstaller with full paths to avoid confusion
-echo Running PyInstaller...
-pyinstaller "%BUILD_DIR%/build.spec" --clean --noconfirm --distpath "dist" --workpath "build_temp"
-
-if %ERRORLEVEL% neq 0 (
-    echo Build failed!
-    echo.
-    echo Debugging info:
-    echo - Build script: %BUILD_DIR%
-    echo - Project root: %CD%
-    echo - Spec file: %BUILD_DIR%build.spec
-    pause
-    exit /b 1
-)
-
 echo ========================================
-echo Build completed successfully!
-echo Version: %VERSION%
-echo Executable: %CD%\..\dist\VScope.exe
-echo ========================================
-pause
 
-endlocal 
+popd >nul
+endlocal
+exit /b 0
